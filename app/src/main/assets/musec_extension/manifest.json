@@ -1,0 +1,30 @@
+{
+  "manifest_version": 2,
+  "name": "MuSec Built-In Shield & Intelligence Engine",
+  "version": "1.0.0",
+  "description": "AdShield, YouTube Kids & Content Shield, Dark Pattern Automator, Video Click-Shield, and On-Demand Page Intelligence for MuSec Android & Android TV.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "musec-shield@musec.browser"
+    }
+  },
+  "permissions": [
+    "<all_urls>",
+    "webRequest",
+    "webRequestBlocking",
+    "tabs",
+    "nativeMessaging",
+    "geckoViewAddons"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-shield.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ]
+}

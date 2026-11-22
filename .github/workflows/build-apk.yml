@@ -1,0 +1,48 @@
+name: Build MuSec Android (Phone + TV) APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout MuSec Android source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Cloud Runner)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK (API 35)
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK Licenses & Install Build Tools
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Build Universal Phone + Android TV APK
+        run: gradle assembleRelease --no-daemon
+
+      - name: Copy & Rename APK
+        run: |
+          mkdir -p release
+          cp app/build/outputs/apk/release/app-release.apk release/MuSec-Android-Phone-TV.apk
+
+      - name: Upload MuSec-Android-Phone-TV.apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: MuSec-Android-Phone-TV-APK
+          path: release/MuSec-Android-Phone-TV.apk
+          retention-days: 90
