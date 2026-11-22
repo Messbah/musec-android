@@ -54,8 +54,8 @@ android {
 }
 
 dependencies {
-    // Official Mozilla GeckoView Browser Engine (Full WebExtension, Private Browsing, YouTube Shield)
-    implementation("org.mozilla.geckoview:geckoview:159.0.20261022150525")
+    // Official Mozilla GeckoView Browser Engine (Matched to Android SDK 35 & androidx.core 1.15.0)
+    implementation("org.mozilla.geckoview:geckoview:136.0.20250227124745")
 
     // AndroidX & Lifecycle
     implementation("androidx.core:core-ktx:1.15.0")

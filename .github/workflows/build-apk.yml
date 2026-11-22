@@ -32,7 +32,7 @@ jobs:
           gradle-version: 8.9
 
       - name: Build Universal Phone + Android TV APK
-        run: gradle assembleRelease --no-daemon
+        run: gradle assembleRelease --no-daemon --console=plain --stacktrace
 
       - name: Copy & Rename APK
         run: |
