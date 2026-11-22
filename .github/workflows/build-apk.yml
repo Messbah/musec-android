@@ -19,13 +19,12 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Set up Android SDK (API 35)
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK Licenses & Install Build Tools
+      - name: Install Android SDK 35 Platform & Build Tools
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          SDK_MANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)
+          echo "Using sdkmanager: $SDK_MANAGER"
+          yes | "$SDK_MANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDK_MANAGER" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
