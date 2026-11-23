@@ -100,7 +100,7 @@ fun ToolsHubSheet(
                         .tvFocusBorder(RoundedCornerShape(14.dp))
                         .clickable { action() }
                 ) {
-                    Text(label, color = MuSecColors.TextPrimary, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp))
+                    Text(label, color = MuSecColors.TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp))
                 }
             }
         }

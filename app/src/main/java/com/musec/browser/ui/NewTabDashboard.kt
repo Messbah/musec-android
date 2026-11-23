@@ -23,6 +23,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -79,6 +81,16 @@ fun NewTabDashboard(
         loadingNews = false
     }
 
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = MuSecColors.TextPrimary,
+        unfocusedTextColor = MuSecColors.TextPrimary,
+        focusedBorderColor = MuSecColors.NeonCyan,
+        unfocusedBorderColor = Color(0x55FFFFFF),
+        focusedContainerColor = Color(0xFF1A1E2F),
+        unfocusedContainerColor = Color(0xFF1A1E2F),
+        cursorColor = MuSecColors.NeonCyan
+    )
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -92,36 +104,36 @@ fun NewTabDashboard(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = if (isAndroidTv) 48.dp else 18.dp, vertical = 24.dp),
+                .padding(horizontal = if (isAndroidTv) 48.dp else 18.dp, vertical = 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
             // Greeting Hero
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
                     text = if (isPrivate) "🕵️ InPrivate Session" else greeting,
                     color = MuSecColors.TextPrimary,
-                    fontSize = if (isAndroidTv) 32.sp else 26.sp,
-                    fontWeight = FontWeight.SemiBold
+                    fontSize = if (isAndroidTv) 34.sp else 28.sp,
+                    fontWeight = FontWeight.Bold
                 )
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(
                     text = if (isPrivate) {
-                        "Ephemeral · Zero History · Auto-wipes when screen locks"
+                        "Ephemeral · Zero History · Auto-wipes on lock"
                     } else {
                         "Private · Fast · YouTube Kids Shield Ready"
                     },
                     color = MuSecColors.TextSecondary,
-                    fontSize = 13.sp
+                    fontSize = if (isAndroidTv) 17.sp else 15.sp
                 )
             }
 
-            // Pill Search Bar
+            // Spacious Pill Search Bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .widthIn(max = 640.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    .widthIn(max = 680.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedTextField(
@@ -129,7 +141,15 @@ fun NewTabDashboard(
                     onValueChange = { searchQuery = it },
                     singleLine = true,
                     shape = RoundedCornerShape(99.dp),
-                    placeholder = { Text("Search Google or enter website URL...") },
+                    colors = fieldColors,
+                    textStyle = TextStyle(fontSize = if (isAndroidTv) 18.sp else 16.sp, color = MuSecColors.TextPrimary),
+                    placeholder = {
+                        Text(
+                            "Search Google or enter URL...",
+                            color = MuSecColors.TextSecondary,
+                            fontSize = if (isAndroidTv) 18.sp else 16.sp
+                        )
+                    },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(onGo = {
                         if (searchQuery.isNotBlank()) onNavigate(searchQuery)
@@ -139,16 +159,18 @@ fun NewTabDashboard(
                 Button(
                     onClick = { if (searchQuery.isNotBlank()) onNavigate(searchQuery) },
                     shape = RoundedCornerShape(99.dp),
-                    modifier = Modifier.tvFocusBorder(RoundedCornerShape(99.dp))
+                    modifier = Modifier
+                        .height(54.dp)
+                        .tvFocusBorder(RoundedCornerShape(99.dp))
                 ) {
-                    Text("Go", fontWeight = FontWeight.Bold)
+                    Text("Search", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 }
             }
 
             // Quick Action Pills (YouTube Kids Shield, Burner Mail)
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Button(
                     onClick = onOpenShield,
@@ -156,32 +178,41 @@ fun NewTabDashboard(
                         containerColor = if (kidsShieldActive) MuSecColors.KidsEmerald else MuSecColors.SurfaceCard
                     ),
                     shape = RoundedCornerShape(99.dp),
-                    modifier = Modifier.tvFocusBorder(RoundedCornerShape(99.dp))
+                    modifier = Modifier
+                        .height(48.dp)
+                        .tvFocusBorder(RoundedCornerShape(99.dp))
                 ) {
                     Text(
-                        text = if (kidsShieldActive) "🛡️ YouTube Kids Shield: ON" else "🛡️ Configure YouTube Kids Shield",
+                        text = if (kidsShieldActive) "🛡️ YouTube Kids Shield: ON" else "🛡️ YouTube Kids Shield",
                         color = if (kidsShieldActive) Color(0xFF062018) else MuSecColors.TextPrimary,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 13.sp
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
                     )
                 }
                 OutlinedButton(
                     onClick = onOpenBurner,
                     shape = RoundedCornerShape(99.dp),
-                    modifier = Modifier.tvFocusBorder(RoundedCornerShape(99.dp))
+                    modifier = Modifier
+                        .height(48.dp)
+                        .tvFocusBorder(RoundedCornerShape(99.dp))
                 ) {
-                    Text("🎭 1-Click Burner Email", color = MuSecColors.TextPrimary, fontSize = 13.sp)
+                    Text("🎭 Burner Email", color = MuSecColors.TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
 
-            // Frequent Websites Grid (Removable tiles, D-pad focusable for TV)
+            // Frequent Websites Grid (Large touch targets, removable tiles)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .widthIn(max = 880.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .widthIn(max = 900.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("Frequent websites", color = MuSecColors.TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                Text(
+                    "Frequent websites",
+                    color = MuSecColors.TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = if (isAndroidTv) 20.sp else 18.sp
+                )
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -208,66 +239,78 @@ fun NewTabDashboard(
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .widthIn(max = 880.dp)
+                        .widthIn(max = 900.dp)
                 ) {
-                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Quick Notes", color = MuSecColors.TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            "Quick Notes",
+                            color = MuSecColors.TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = if (isAndroidTv) 20.sp else 17.sp
+                        )
                         OutlinedTextField(
                             value = quickNotes,
                             onValueChange = {
                                 quickNotes = it
                                 db.saveQuickNotes(it)
                             },
+                            colors = fieldColors,
+                            textStyle = TextStyle(fontSize = 16.sp, color = MuSecColors.TextPrimary),
                             maxLines = 4,
-                            placeholder = { Text("Write a quick note...") },
+                            placeholder = { Text("Write a quick note...", color = MuSecColors.TextSecondary, fontSize = 16.sp) },
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }
             }
 
-            // World News Briefing (Readable font size, clean stripped text — no HTML tags)
+            // World News Briefing (Large, easy-to-read text, zero HTML tags)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .widthIn(max = 880.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .widthIn(max = 900.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("Top Stories & Global Briefing", color = MuSecColors.TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                Text(
+                    "Top Stories & Global Briefing",
+                    color = MuSecColors.TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = if (isAndroidTv) 20.sp else 18.sp
+                )
                 if (loadingNews) {
-                    Text("Loading clean live news briefing...", color = MuSecColors.TextSecondary, fontSize = 14.sp)
+                    Text("Loading live Sweden, Europe & World briefing...", color = MuSecColors.TextSecondary, fontSize = 15.sp)
                 } else if (newsItems.isEmpty()) {
-                    Text("Connect to the internet to load live Sweden, Europe & World news.", color = MuSecColors.TextSecondary, fontSize = 14.sp)
+                    Text("Tap any website above or search to start browsing.", color = MuSecColors.TextSecondary, fontSize = 15.sp)
                 } else {
                     newsItems.forEach { item ->
                         Surface(
                             color = MuSecColors.SurfaceCard,
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .tvFocusBorder(RoundedCornerShape(14.dp))
+                                .tvFocusBorder(RoundedCornerShape(16.dp))
                                 .clickable { onNavigate(item.url) }
                         ) {
-                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Text(
                                     text = "${item.region.uppercase()} · ${item.source}",
                                     color = MuSecColors.NeonCyan,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp
+                                    fontSize = 13.sp
                                 )
                                 Text(
                                     text = item.headline,
                                     color = MuSecColors.TextPrimary,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = if (isAndroidTv) 17.sp else 15.sp,
-                                    lineHeight = 22.sp
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = if (isAndroidTv) 19.sp else 17.sp,
+                                    lineHeight = 24.sp
                                 )
                                 if (item.summary.isNotBlank()) {
                                     Text(
                                         text = item.summary,
                                         color = MuSecColors.TextSecondary,
-                                        fontSize = if (isAndroidTv) 15.sp else 14.sp,
-                                        lineHeight = 21.sp
+                                        fontSize = if (isAndroidTv) 16.sp else 15.sp,
+                                        lineHeight = 22.sp
                                     )
                                 }
                             }
@@ -276,7 +319,7 @@ fun NewTabDashboard(
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(28.dp))
         }
     }
 }
@@ -298,38 +341,38 @@ private fun SiteTileCard(
     ) {
         Row(
             modifier = Modifier.padding(
-                horizontal = if (isAndroidTv) 18.dp else 14.dp,
-                vertical = if (isAndroidTv) 14.dp else 11.dp
+                horizontal = if (isAndroidTv) 20.dp else 16.dp,
+                vertical = if (isAndroidTv) 16.dp else 13.dp
             ),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .background(Color(site.badgeColorHex).copy(alpha = 0.25f))
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
             ) {
                 Text(
                     text = site.title.take(1).uppercase(),
                     color = Color(site.badgeColorHex),
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
+                    fontSize = 16.sp
                 )
             }
             Text(
                 text = site.title,
                 color = MuSecColors.TextPrimary,
                 fontWeight = FontWeight.SemiBold,
-                fontSize = if (isAndroidTv) 15.sp else 13.sp
+                fontSize = if (isAndroidTv) 17.sp else 16.sp
             )
             Text(
                 text = "✕",
                 color = MuSecColors.TextSecondary,
-                fontSize = 12.sp,
+                fontSize = 15.sp,
                 modifier = Modifier
                     .clickable { onRemove() }
-                    .padding(start = 4.dp)
+                    .padding(start = 6.dp)
             )
         }
     }

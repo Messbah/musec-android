@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoRuntimeSettings
@@ -28,7 +29,7 @@ data class BrowserTab(
     val id: String = UUID.randomUUID().toString(),
     val session: GeckoSession,
     val isPrivate: Boolean = false,
-    val url: String = "musec://newtab",
+    val url: String = GeckoBrowserManager.NEWTAB_URL,
     val title: String = "New Tab",
     val progress: Int = 100,
     val canGoBack: Boolean = false,
@@ -36,7 +37,7 @@ data class BrowserTab(
 )
 
 class GeckoBrowserManager(
-    private val context: Context,
+    context: Context,
     val db: MuSecDatabase,
     val isAndroidTv: Boolean
 ) {
@@ -46,16 +47,25 @@ class GeckoBrowserManager(
         private const val EXTENSION_ID = "musec-shield@musec.browser"
         private const val NATIVE_APP_NAME = "musec_bridge"
         const val NEWTAB_URL = "musec://newtab"
+
+        @Volatile
+        private var sharedRuntime: GeckoRuntime? = null
+
+        private fun getOrCreateRuntime(appContext: Context): GeckoRuntime {
+            return sharedRuntime ?: synchronized(this) {
+                sharedRuntime ?: GeckoRuntime.create(
+                    appContext,
+                    GeckoRuntimeSettings.Builder()
+                        .javaScriptEnabled(true)
+                        .consoleOutput(false)
+                        .build()
+                ).also { sharedRuntime = it }
+            }
+        }
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val runtime: GeckoRuntime = GeckoRuntime.create(
-        context.applicationContext,
-        GeckoRuntimeSettings.Builder()
-            .javaScriptEnabled(true)
-            .consoleOutput(false)
-            .build()
-    )
+    private val runtime: GeckoRuntime = getOrCreateRuntime(context.applicationContext)
 
     private var extensionPort: WebExtension.Port? = null
     private val pendingCommands = ConcurrentHashMap<String, CompletableDeferred<JSONObject>>()
@@ -234,13 +244,24 @@ class GeckoBrowserManager(
         val tabId = UUID.randomUUID().toString()
 
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            override fun onLoadRequest(
+                session: GeckoSession,
+                request: GeckoSession.NavigationDelegate.LoadRequest
+            ): GeckoResult<AllowOrDeny> {
+                return GeckoResult.fromValue(AllowOrDeny.ALLOW)
+            }
+
             override fun onLocationChange(
                 session: GeckoSession,
                 newUrl: String?,
                 perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,
                 hasUserGesture: Boolean
             ) {
-                val safeUrl = newUrl ?: return
+                val safeUrl = newUrl?.trim() ?: return
+                // CRITICAL: GeckoSession emits "about:blank" immediately after open(runtime).
+                // Never overwrite the MuSec Landing Page (musec://newtab) with about:blank!
+                if (safeUrl == "about:blank" || safeUrl.isEmpty()) return
+
                 updateTab(tabId) { it.copy(url = safeUrl) }
                 if (!isPrivate && safeUrl.startsWith("http")) {
                     val currentTitle = _tabs.value.find { it.id == tabId }?.title ?: safeUrl
@@ -257,7 +278,6 @@ class GeckoBrowserManager(
             }
 
             override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession> {
-                // Open target="_blank" links cleanly inside MuSec tab strip instead of popups
                 val newTab = createTab(url = uri, isPrivate = isPrivate)
                 return GeckoResult.fromValue(newTab.session)
             }
@@ -266,13 +286,18 @@ class GeckoBrowserManager(
         session.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onTitleChange(session: GeckoSession, title: String?) {
                 val safeTitle = title?.takeIf { it.isNotBlank() } ?: return
-                updateTab(tabId) { it.copy(title = safeTitle) }
+                updateTab(tabId) { current ->
+                    if (current.url == NEWTAB_URL) current else current.copy(title = safeTitle)
+                }
             }
         }
 
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onProgressChange(session: GeckoSession, progress: Int) {
-                updateTab(tabId) { it.copy(progress = progress) }
+                updateTab(tabId) { current ->
+                    if (current.url == NEWTAB_URL) current.copy(progress = 100)
+                    else current.copy(progress = progress)
+                }
             }
         }
 
@@ -316,10 +341,6 @@ class GeckoBrowserManager(
         }
     }
 
-    /**
-     * Mobile equivalent of MuSec's Laptop Lid-Shut Guard:
-     * Auto-closes all InPrivate tabs and wipes private browsing data when the phone/TV screen locks.
-     */
     fun wipeAllPrivateTabs() {
         val current = _tabs.value
         val privateTabs = current.filter { it.isPrivate }
@@ -341,13 +362,28 @@ class GeckoBrowserManager(
     fun navigateActiveTab(rawInput: String) {
         val active = getActiveTab() ?: createTab()
         val trimmed = rawInput.trim()
+        if (trimmed.isEmpty()) return
         if (trimmed.equals(NEWTAB_URL, ignoreCase = true)) {
-            updateTab(active.id) { it.copy(url = NEWTAB_URL, title = if (it.isPrivate) "Private Tab" else "New Tab", progress = 100) }
+            runCatching { active.session.stop() }
+            updateTab(active.id) {
+                it.copy(
+                    url = NEWTAB_URL,
+                    title = if (it.isPrivate) "Private Tab" else "New Tab",
+                    progress = 100
+                )
+            }
             return
         }
         val resolved = resolveInputToUrl(trimmed)
-        updateTab(active.id) { it.copy(url = resolved) }
+        updateTab(active.id) { it.copy(url = resolved, progress = 15) }
         active.session.loadUri(resolved)
+    }
+
+    fun reloadActiveTab() {
+        val active = getActiveTab() ?: return
+        if (active.url != NEWTAB_URL) {
+            active.session.reload()
+        }
     }
 
     fun resolveInputToUrl(input: String): String {

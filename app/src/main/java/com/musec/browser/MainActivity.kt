@@ -21,10 +21,19 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -44,13 +53,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.fragment.app.FragmentActivity
 import com.musec.browser.data.EncryptedVault
 import com.musec.browser.data.MuSecDatabase
@@ -94,6 +107,11 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Draw cleanly with explicit Compose safeDrawing / cutout / statusBar / navBar insets
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = false
+        WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightNavigationBars = false
+
         val uiModeManager = getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
         isAndroidTv = (uiModeManager?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION) ||
             packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
@@ -102,7 +120,6 @@ class MainActivity : FragmentActivity() {
         vault = EncryptedVault(db)
         browserManager = GeckoBrowserManager(this, db, isAndroidTv)
 
-        // If device has no biometric hardware (e.g., Android TV), allow Vault access directly
         val bio = BiometricManager.from(this)
         if (bio.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL) != BiometricManager.BIOMETRIC_SUCCESS) {
             vaultUnlockedState.value = true
@@ -181,7 +198,6 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        // Android TV Remote Menu button toggles the YouTube Kids Shield / Power Tools
         if (keyCode == KeyEvent.KEYCODE_MENU) {
             activeSheetState.value = if (activeSheetState.value == ActiveToolSheet.SHIELD) {
                 ActiveToolSheet.NONE
@@ -196,8 +212,12 @@ class MainActivity : FragmentActivity() {
                 return true
             }
             val active = browserManager.getActiveTab()
-            if (active != null && active.canGoBack) {
-                active.session.goBack()
+            if (active != null && active.url != GeckoBrowserManager.NEWTAB_URL) {
+                if (active.canGoBack) {
+                    active.session.goBack()
+                } else {
+                    browserManager.navigateActiveTab(GeckoBrowserManager.NEWTAB_URL)
+                }
                 return true
             }
         }
@@ -229,6 +249,8 @@ private fun MuSecBrowserRoot(
     val shieldConfig by manager.shieldConfig.collectAsState()
     val shieldStats by manager.shieldStats.collectAsState()
     val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     val activeTab = tabs.find { it.id == activeTabId } ?: tabs.firstOrNull()
     val currentUrl = activeTab?.url ?: GeckoBrowserManager.NEWTAB_URL
@@ -242,115 +264,156 @@ private fun MuSecBrowserRoot(
         mutableStateOf(!isNewTab && db.isBookmarked(currentUrl))
     }
 
+    fun submitOmnibox() {
+        val query = omniboxText.trim()
+        if (query.isNotEmpty()) {
+            focusManager.clearFocus()
+            keyboardController?.hide()
+            manager.navigateActiveTab(query)
+        }
+    }
+
+    // Root container respects status bar, camera hole/display cutout, gesture bar, and keyboard IME!
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(MuSecColors.BgDeep)
+            .windowInsetsPadding(WindowInsets.safeDrawing.union(WindowInsets.displayCutout))
     ) {
-        // Sleek Aesthetic Glass Top Toolbar (Touch + TV D-Pad Focusable)
+        // 1. TOP SAFE ADDRESS BAR (Full-width, never behind camera hole, 50dp tall touch targets!)
+        val barBg = if (activeTab?.isPrivate == true) Color(0xFF23183A) else MuSecColors.SurfaceGlass
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(if (activeTab?.isPrivate == true) Color(0xFF23183A) else MuSecColors.SurfaceGlass)
-                .padding(horizontal = if (isAndroidTv) 20.dp else 8.dp, vertical = 8.dp),
+                .background(barBg)
+                .padding(horizontal = if (isAndroidTv) 24.dp else 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            ToolbarIconPill("◀", enabled = activeTab?.canGoBack == true) { activeTab?.session?.goBack() }
             if (isAndroidTv) {
-                ToolbarIconPill("▶", enabled = activeTab?.canGoForward == true) { activeTab?.session?.goForward() }
+                ActionButtonPill("◀", enabled = activeTab?.canGoBack == true) { activeTab?.session?.goBack() }
+                ActionButtonPill("▶", enabled = activeTab?.canGoForward == true) { activeTab?.session?.goForward() }
+                ActionButtonPill("⌂") { manager.navigateActiveTab(GeckoBrowserManager.NEWTAB_URL) }
             }
-            ToolbarIconPill("⌂") { manager.navigateActiveTab(GeckoBrowserManager.NEWTAB_URL) }
 
-            // Glass Omnibox
+            // Spacious Glass Pill Omnibox
             Row(
                 modifier = Modifier
                     .weight(1f)
+                    .height(48.dp)
                     .clip(RoundedCornerShape(99.dp))
-                    .background(Color(0xFF151722))
+                    .background(Color(0xFF131622))
                     .tvFocusBorder(RoundedCornerShape(99.dp))
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                    .padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
                     text = if (activeTab?.isPrivate == true) "🕵️" else legitimacy.grade,
                     color = if (activeTab?.isPrivate == true) MuSecColors.NeonViolet else MuSecColors.KidsEmerald,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp,
+                    fontSize = 14.sp,
                     modifier = Modifier.clickable { onSetSheet(ActiveToolSheet.SHIELD) }
                 )
+
                 BasicTextField(
                     value = omniboxText,
                     onValueChange = { omniboxText = it },
                     singleLine = true,
-                    textStyle = TextStyle(color = MuSecColors.TextPrimary, fontSize = 13.sp),
+                    textStyle = TextStyle(
+                        color = MuSecColors.TextPrimary,
+                        fontSize = if (isAndroidTv) 17.sp else 16.sp
+                    ),
                     cursorBrush = SolidColor(MuSecColors.NeonCyan),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = {
-                        if (omniboxText.isNotBlank()) manager.navigateActiveTab(omniboxText)
-                    }),
+                    keyboardActions = KeyboardActions(onGo = { submitOmnibox() }),
                     decorationBox = { inner ->
-                        if (omniboxText.isEmpty()) {
-                            Text("Search or enter URL...", color = MuSecColors.TextSecondary, fontSize = 13.sp)
+                        Box(contentAlignment = Alignment.CenterStart, modifier = Modifier.fillMaxWidth()) {
+                            if (omniboxText.isEmpty()) {
+                                Text(
+                                    text = "Search or enter website...",
+                                    color = MuSecColors.TextSecondary,
+                                    fontSize = if (isAndroidTv) 17.sp else 16.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            inner()
                         }
-                        inner()
                     },
                     modifier = Modifier.weight(1f)
                 )
+
+                if (omniboxText.isNotEmpty()) {
+                    Text(
+                        text = "✕",
+                        color = MuSecColors.TextSecondary,
+                        fontSize = 16.sp,
+                        modifier = Modifier
+                            .clickable { omniboxText = "" }
+                            .padding(horizontal = 4.dp)
+                    )
+                }
+
                 if (!isNewTab) {
                     Text(
                         text = if (isBookmarked) "★" else "☆",
                         color = if (isBookmarked) MuSecColors.WarningAmber else MuSecColors.TextSecondary,
-                        fontSize = 15.sp,
-                        modifier = Modifier.clickable {
-                            isBookmarked = db.toggleBookmark(currentUrl, activeTab?.title ?: currentUrl)
-                        }
+                        fontSize = 20.sp,
+                        modifier = Modifier
+                            .clickable {
+                                isBookmarked = db.toggleBookmark(currentUrl, activeTab?.title ?: currentUrl)
+                            }
+                            .padding(horizontal = 4.dp)
                     )
                 }
             }
 
-            // Prominent Dedicated YouTube Kids & Content Shield Button
-            Row(
+            // Explicit Go / Reload Button (Always visible & tappable!)
+            Surface(
+                color = MuSecColors.NeonCyan,
+                shape = RoundedCornerShape(99.dp),
                 modifier = Modifier
+                    .height(48.dp)
                     .clip(RoundedCornerShape(99.dp))
-                    .background(
-                        when {
-                            !shieldConfig.ytEnabled -> Color(0x22FFFFFF)
-                            shieldConfig.isKidsPresetActive -> Color(0x3334D399)
-                            else -> Color(0x2838BDF8)
-                        }
-                    )
-                    .tvFocusBorder(
-                        shape = RoundedCornerShape(99.dp),
-                        focusedColor = if (shieldConfig.isKidsPresetActive) MuSecColors.KidsEmerald else MuSecColors.NeonCyan
-                    )
+                    .tvFocusBorder(RoundedCornerShape(99.dp))
                     .clickable {
-                        onSetSheet(if (activeSheet == ActiveToolSheet.SHIELD) ActiveToolSheet.NONE else ActiveToolSheet.SHIELD)
+                        if (omniboxText.isNotBlank() && omniboxText.trim() != currentUrl) {
+                            submitOmnibox()
+                        } else if (!isNewTab) {
+                            manager.reloadActiveTab()
+                        }
                     }
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Text("🛡️", fontSize = 12.sp)
-                Text(
-                    text = when {
-                        !shieldConfig.ytEnabled -> "OFF"
-                        shieldConfig.isKidsPresetActive -> "Kids"
-                        shieldStats.totalBlocked > 0 -> "${shieldStats.totalBlocked}"
-                        else -> "${shieldConfig.activeFilterCount}F"
-                    },
-                    color = if (shieldConfig.isKidsPresetActive) MuSecColors.KidsEmerald else MuSecColors.NeonCyan,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp
-                )
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                ) {
+                    Text(
+                        text = if (omniboxText.isNotBlank() && omniboxText.trim() != currentUrl) "Go" else "↻",
+                        color = Color(0xFF0A111D),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                }
             }
 
-            ToolbarIconPill("${tabs.size}") {
-                onSetSheet(if (activeSheet == ActiveToolSheet.TABS) ActiveToolSheet.NONE else ActiveToolSheet.TABS)
-            }
-            ToolbarIconPill("☰") {
-                onSetSheet(if (activeSheet == ActiveToolSheet.TOOLS_HUB) ActiveToolSheet.NONE else ActiveToolSheet.TOOLS_HUB)
+            if (isAndroidTv) {
+                ShieldToolbarPill(
+                    ytEnabled = shieldConfig.ytEnabled,
+                    kidsPreset = shieldConfig.isKidsPresetActive,
+                    totalBlocked = shieldStats.totalBlocked,
+                    activeFilters = shieldConfig.activeFilterCount,
+                    onClick = {
+                        onSetSheet(if (activeSheet == ActiveToolSheet.SHIELD) ActiveToolSheet.NONE else ActiveToolSheet.SHIELD)
+                    }
+                )
+                ActionButtonPill("Tabs (${tabs.size})") {
+                    onSetSheet(if (activeSheet == ActiveToolSheet.TABS) ActiveToolSheet.NONE else ActiveToolSheet.TABS)
+                }
+                ActionButtonPill("☰ Tools") {
+                    onSetSheet(if (activeSheet == ActiveToolSheet.TOOLS_HUB) ActiveToolSheet.NONE else ActiveToolSheet.TOOLS_HUB)
+                }
             }
         }
 
@@ -362,70 +425,81 @@ private fun MuSecBrowserRoot(
                 trackColor = Color.Transparent,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(2.5.dp)
+                    .height(3.dp)
             )
         }
 
-        // Main Browser Stage + Optional Compact On-Demand Floating Button + Active Tool Sheet
+        // 2. MAIN BROWSER STAGE (Persistent GeckoView + Landing Page Overlay + On-Demand Floating Pill)
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            // Keep GeckoView stably mounted so switching tabs/landing page never detaches brokenly
+            if (activeTab != null) {
+                AndroidView(
+                    factory = { ctx -> GeckoView(ctx) },
+                    update = { gv ->
+                        if (gv.session !== activeTab.session) {
+                            runCatching { gv.releaseSession() }
+                            gv.setSession(activeTab.session)
+                        }
+                    },
+                    onRelease = { gv ->
+                        runCatching { gv.releaseSession() }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            // Aesthetic Glass New Tab Landing Page overlaid cleanly whenever tab is on musec://newtab
             if (isNewTab) {
                 NewTabDashboard(
                     db = db,
                     isPrivate = activeTab?.isPrivate == true,
                     isAndroidTv = isAndroidTv,
                     kidsShieldActive = shieldConfig.isKidsPresetActive,
-                    onNavigate = { manager.navigateActiveTab(it) },
+                    onNavigate = {
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
+                        manager.navigateActiveTab(it)
+                    },
                     onOpenShield = { onSetSheet(ActiveToolSheet.SHIELD) },
                     onOpenBurner = { onSetSheet(ActiveToolSheet.BURNER) }
                 )
-            } else if (activeTab != null) {
-                AndroidView(
-                    factory = { ctx -> GeckoView(ctx) },
-                    update = { gv ->
-                        if (gv.session !== activeTab.session) {
-                            gv.setSession(activeTab.session)
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                // Compact On-Demand Floating Button (Only scrapes prices/reviews when user clicks!)
-                if (activeSheet == ActiveToolSheet.NONE) {
-                    Surface(
-                        color = Color(0xE6181A28),
-                        shape = RoundedCornerShape(99.dp),
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(14.dp)
-                            .tvFocusBorder(RoundedCornerShape(99.dp))
-                            .clickable { onSetSheet(ActiveToolSheet.PRICE_AND_REVIEWS) }
-                    ) {
-                        Text(
-                            text = "🏷️ Price & Reviews",
-                            color = MuSecColors.TextPrimary,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp)
-                        )
-                    }
+            } else if (activeSheet == ActiveToolSheet.NONE) {
+                // Compact On-Demand Floating Button (Only scrapes prices/reviews when user taps it!)
+                Surface(
+                    color = Color(0xEB181B2A),
+                    shape = RoundedCornerShape(99.dp),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(14.dp)
+                        .tvFocusBorder(RoundedCornerShape(99.dp))
+                        .clickable { onSetSheet(ActiveToolSheet.PRICE_AND_REVIEWS) }
+                ) {
+                    Text(
+                        text = "🏷️ Price & Reviews",
+                        color = MuSecColors.TextPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                    )
                 }
             }
 
-            // Glass Drawer Overlay for Active Tool / Shield Sheet
+            // Glass Modal Sheet Overlay for Active Tool / YouTube Kids Shield
             if (activeSheet != ActiveToolSheet.NONE) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color(0x99000000))
+                        .background(Color(0xA6000000))
                         .clickable { onSetSheet(ActiveToolSheet.NONE) }
                 )
                 Surface(
                     color = MuSecColors.SurfaceGlass,
-                    shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                    shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(top = if (isAndroidTv) 48.dp else 64.dp)
+                        .fillMaxHeight(0.88f)
+                        .imePadding()
                 ) {
                     when (activeSheet) {
                         ActiveToolSheet.SHIELD -> ShieldPanelContent(
@@ -496,29 +570,108 @@ private fun MuSecBrowserRoot(
                 }
             }
         }
+
+        // 3. PHONE BOTTOM NAVIGATION & SHIELD BAR (Large thumb-friendly 56dp controls!)
+        if (!isAndroidTv) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(barBg)
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ActionButtonPill("◀", enabled = activeTab?.canGoBack == true) { activeTab?.session?.goBack() }
+                ActionButtonPill("▶", enabled = activeTab?.canGoForward == true) { activeTab?.session?.goForward() }
+                ActionButtonPill("⌂") { manager.navigateActiveTab(GeckoBrowserManager.NEWTAB_URL) }
+                ShieldToolbarPill(
+                    ytEnabled = shieldConfig.ytEnabled,
+                    kidsPreset = shieldConfig.isKidsPresetActive,
+                    totalBlocked = shieldStats.totalBlocked,
+                    activeFilters = shieldConfig.activeFilterCount,
+                    onClick = {
+                        onSetSheet(if (activeSheet == ActiveToolSheet.SHIELD) ActiveToolSheet.NONE else ActiveToolSheet.SHIELD)
+                    }
+                )
+                ActionButtonPill("🗂 ${tabs.size}") {
+                    onSetSheet(if (activeSheet == ActiveToolSheet.TABS) ActiveToolSheet.NONE else ActiveToolSheet.TABS)
+                }
+                ActionButtonPill("☰") {
+                    onSetSheet(if (activeSheet == ActiveToolSheet.TOOLS_HUB) ActiveToolSheet.NONE else ActiveToolSheet.TOOLS_HUB)
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun ToolbarIconPill(
+private fun ShieldToolbarPill(
+    ytEnabled: Boolean,
+    kidsPreset: Boolean,
+    totalBlocked: Int,
+    activeFilters: Int,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .height(44.dp)
+            .clip(RoundedCornerShape(99.dp))
+            .background(
+                when {
+                    !ytEnabled -> Color(0x22FFFFFF)
+                    kidsPreset -> Color(0x3834D399)
+                    else -> Color(0x2E38BDF8)
+                }
+            )
+            .tvFocusBorder(
+                shape = RoundedCornerShape(99.dp),
+                focusedColor = if (kidsPreset) MuSecColors.KidsEmerald else MuSecColors.NeonCyan
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Text("🛡️", fontSize = 15.sp)
+        Text(
+            text = when {
+                !ytEnabled -> "OFF"
+                kidsPreset -> "Kids"
+                totalBlocked > 0 -> "$totalBlocked"
+                else -> "${activeFilters}F"
+            },
+            color = if (kidsPreset) MuSecColors.KidsEmerald else MuSecColors.NeonCyan,
+            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp
+        )
+    }
+}
+
+@Composable
+private fun ActionButtonPill(
     label: String,
     enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     Surface(
-        color = Color(0x18FFFFFF),
-        shape = RoundedCornerShape(10.dp),
+        color = Color(0x1EFFFFFF),
+        shape = RoundedCornerShape(12.dp),
         modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
-            .tvFocusBorder(RoundedCornerShape(10.dp))
+            .height(44.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .tvFocusBorder(RoundedCornerShape(12.dp))
             .clickable(enabled = enabled) { onClick() }
     ) {
-        Text(
-            text = label,
-            color = if (enabled) MuSecColors.TextPrimary else Color(0x55A9B2C8),
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 13.sp,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
-        )
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.padding(horizontal = 13.dp)
+        ) {
+            Text(
+                text = label,
+                color = if (enabled) MuSecColors.TextPrimary else Color(0x55A9B2C8),
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 16.sp
+            )
+        }
     }
 }

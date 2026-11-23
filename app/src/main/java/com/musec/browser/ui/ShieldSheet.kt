@@ -266,7 +266,7 @@ fun ShieldPanelContent(
                             .background(if (effectiveActive) MuSecColors.KidsEmerald else Color(0x6694A3B8))
                     )
                     Spacer(Modifier.width(7.dp))
-                    Text(label, color = MuSecColors.TextPrimary, fontSize = 12.sp)
+                    Text(label, color = MuSecColors.TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 }
             }
         }
@@ -448,7 +448,7 @@ fun ShieldPanelContent(
 @Composable
 private fun StatBadge(label: String, value: Int) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value.toString(), color = MuSecColors.NeonCyan, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-        Text(label, color = MuSecColors.TextSecondary, fontSize = 11.sp)
+        Text(value.toString(), color = MuSecColors.NeonCyan, fontWeight = FontWeight.Bold, fontSize = 19.sp)
+        Text(label, color = MuSecColors.TextSecondary, fontSize = 13.sp)
     }
 }
