@@ -232,7 +232,11 @@ class GeckoBrowserManager(
         return _tabs.value.find { it.id == id } ?: _tabs.value.firstOrNull()
     }
 
-    fun createTab(url: String = NEWTAB_URL, isPrivate: Boolean = false): BrowserTab {
+    fun createTab(
+        url: String = NEWTAB_URL,
+        isPrivate: Boolean = false,
+        openImmediately: Boolean = true
+    ): BrowserTab {
         val settings = GeckoSessionSettings.Builder()
             .usePrivateMode(isPrivate)
             .userAgentMode(
@@ -248,6 +252,16 @@ class GeckoBrowserManager(
                 session: GeckoSession,
                 request: GeckoSession.NavigationDelegate.LoadRequest
             ): GeckoResult<AllowOrDeny> {
+                // Cleanly open target="_blank" / new-window requests as a new MuSec tab
+                // without colliding with GeckoView's onNewSession lifecycle
+                if (request.target == GeckoSession.NavigationDelegate.LoadRequest.TARGET_WINDOW_NEW &&
+                    request.uri.startsWith("http", ignoreCase = true)
+                ) {
+                    mainHandler.post {
+                        createTab(url = request.uri, isPrivate = isPrivate, openImmediately = true)
+                    }
+                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                }
                 return GeckoResult.fromValue(AllowOrDeny.ALLOW)
             }
 
@@ -258,14 +272,12 @@ class GeckoBrowserManager(
                 hasUserGesture: Boolean
             ) {
                 val safeUrl = newUrl?.trim() ?: return
-                // CRITICAL: GeckoSession emits "about:blank" immediately after open(runtime).
-                // Never overwrite the MuSec Landing Page (musec://newtab) with about:blank!
                 if (safeUrl == "about:blank" || safeUrl.isEmpty()) return
 
                 updateTab(tabId) { it.copy(url = safeUrl) }
                 if (!isPrivate && safeUrl.startsWith("http")) {
                     val currentTitle = _tabs.value.find { it.id == tabId }?.title ?: safeUrl
-                    db.recordVisit(safeUrl, currentTitle)
+                    runCatching { db.recordVisit(safeUrl, currentTitle) }
                 }
             }
 
@@ -278,7 +290,9 @@ class GeckoBrowserManager(
             }
 
             override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession> {
-                val newTab = createTab(url = uri, isPrivate = isPrivate)
+                // GeckoView requires an UNOPENED GeckoSession from onNewSession
+                // (calling open() here throws IllegalStateException: Session is already open!)
+                val newTab = createTab(url = uri.ifBlank { NEWTAB_URL }, isPrivate = isPrivate, openImmediately = false)
                 return GeckoResult.fromValue(newTab.session)
             }
         }
@@ -288,6 +302,32 @@ class GeckoBrowserManager(
                 val safeTitle = title?.takeIf { it.isNotBlank() } ?: return
                 updateTab(tabId) { current ->
                     if (current.url == NEWTAB_URL) current else current.copy(title = safeTitle)
+                }
+            }
+
+            override fun onCrash(session: GeckoSession) {
+                // Recover gracefully if a content process crashes instead of closing the browser
+                mainHandler.post {
+                    runCatching {
+                        if (!session.isOpen) session.open(runtime)
+                        val currentUrl = _tabs.value.find { it.id == tabId }?.url
+                        if (!currentUrl.isNullOrBlank() && currentUrl != NEWTAB_URL) {
+                            session.loadUri(currentUrl)
+                        }
+                    }
+                }
+            }
+
+            override fun onKill(session: GeckoSession) {
+                // Recover gracefully if Android LMK kills the Gecko content process
+                mainHandler.post {
+                    runCatching {
+                        if (!session.isOpen) session.open(runtime)
+                        val currentUrl = _tabs.value.find { it.id == tabId }?.url
+                        if (!currentUrl.isNullOrBlank() && currentUrl != NEWTAB_URL) {
+                            session.loadUri(currentUrl)
+                        }
+                    }
                 }
             }
         }
@@ -301,7 +341,9 @@ class GeckoBrowserManager(
             }
         }
 
-        session.open(runtime)
+        if (openImmediately && !session.isOpen) {
+            runCatching { session.open(runtime) }
+        }
         val tab = BrowserTab(
             id = tabId,
             session = session,
@@ -313,10 +355,16 @@ class GeckoBrowserManager(
         _tabs.update { it + tab }
         _activeTabId.value = tabId
 
-        if (url != NEWTAB_URL && url.isNotBlank()) {
-            session.loadUri(resolveInputToUrl(url))
+        if (openImmediately && url != NEWTAB_URL && url.isNotBlank()) {
+            runCatching { session.loadUri(resolveInputToUrl(url)) }
         }
         return tab
+    }
+
+    fun ensureSessionOpen(session: GeckoSession) {
+        if (!session.isOpen) {
+            runCatching { session.open(runtime) }
+        }
     }
 
     fun selectTab(tabId: String) {

@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Rational
 import android.view.KeyEvent
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
@@ -273,6 +274,16 @@ private fun MuSecBrowserRoot(
         }
     }
 
+    // Properly handle Android 15/16 Predictive Back & Swipe-Back Gesture on Pixel 10 Pro
+    // so swiping back closes panels or navigates back in history instead of exiting the app!
+    BackHandler(enabled = activeSheet != ActiveToolSheet.NONE || !isNewTab) {
+        when {
+            activeSheet != ActiveToolSheet.NONE -> onSetSheet(ActiveToolSheet.NONE)
+            activeTab != null && activeTab.canGoBack -> runCatching { activeTab.session.goBack() }
+            !isNewTab -> manager.navigateActiveTab(GeckoBrowserManager.NEWTAB_URL)
+        }
+    }
+
     // Root container respects status bar, camera hole/display cutout, gesture bar, and keyboard IME!
     Column(
         modifier = Modifier
@@ -437,8 +448,11 @@ private fun MuSecBrowserRoot(
                     factory = { ctx -> GeckoView(ctx) },
                     update = { gv ->
                         if (gv.session !== activeTab.session) {
-                            runCatching { gv.releaseSession() }
-                            gv.setSession(activeTab.session)
+                            runCatching {
+                                manager.ensureSessionOpen(activeTab.session)
+                                gv.releaseSession()
+                                gv.setSession(activeTab.session)
+                            }
                         }
                     },
                     onRelease = { gv ->
