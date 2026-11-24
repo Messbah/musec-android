@@ -254,7 +254,7 @@ class GeckoBrowserManager(
             ): GeckoResult<AllowOrDeny> {
                 // Cleanly open target="_blank" / new-window requests as a new MuSec tab
                 // without colliding with GeckoView's onNewSession lifecycle
-                if (request.target == GeckoSession.NavigationDelegate.LoadRequest.TARGET_WINDOW_NEW &&
+                if (request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW &&
                     request.uri.startsWith("http", ignoreCase = true)
                 ) {
                     mainHandler.post {
