@@ -5,6 +5,7 @@
   const IS_YT = HOST === "youtube.com" || HOST.endsWith(".youtube.com") || HOST === "youtu.be";
   const IS_IG = HOST === "instagram.com" || HOST.endsWith(".instagram.com");
   const IS_FB = HOST === "facebook.com" || HOST.endsWith(".facebook.com");
+  const IS_TOP_FRAME = window === window.top;
 
   let config = {
     adShieldEnabled: true,
@@ -25,7 +26,168 @@
       allowedChannels: []
     }
   };
+  let cosmeticSelectors = [];
 
+  // =========================================================================
+  // 1. MAIN-WORLD VIDEO CLICK-SHIELD & POPUP BLOCKER (runs at document_start
+  //    in ALL frames, including embedded video player iframes!)
+  // =========================================================================
+  function injectMainWorldPopupShield() {
+    try {
+      const script = document.createElement("script");
+      script.textContent = `
+        (() => {
+          if (window.__musecMainWorldShield) return;
+          window.__musecMainWorldShield = true;
+
+          const AUTH_RE = /(?:accounts\\.google\\.com|login\\.microsoftonline\\.com|appleid\\.apple\\.com|bankid|frejaeid|swedbank|seb\\.se|nordea|handelsbanken|klarna|paypal|stripe|oauth2?|authorize)/i;
+          const isAuth = (str) => AUTH_RE.test(String(str || ""));
+
+          const makeDecoyWindow = () => {
+            const noop = () => {};
+            const loc = { href: "about:blank", assign: noop, replace: noop, reload: noop };
+            const doc = { open: noop, write: noop, writeln: noop, close: noop, body: {}, documentElement: {} };
+            const obj = { closed: false, focus: noop, blur: noop, close: noop, postMessage: noop, opener: null, location: loc, document: doc };
+            return new Proxy(obj, {
+              get(t, p) { return p === "closed" ? false : (p in t ? t[p] : noop); },
+              set(t, p, v) { if (p === "location" || p === "href") loc.href = String(v || ""); else t[p] = v; return true; }
+            });
+          };
+
+          // 1. Intercept window.open() popups on all non-auth sites (stops 90%+ of video-click popups!)
+          const origOpen = window.open;
+          if (typeof origOpen === "function") {
+            const guardedOpen = function open(url) {
+              if (isAuth(location.hostname) || isAuth(url)) {
+                return origOpen.apply(this, arguments);
+              }
+              return makeDecoyWindow();
+            };
+            try { Object.defineProperty(guardedOpen, "toString", { value: () => "function open() { [native code] }" }); } catch {}
+            window.open = guardedOpen;
+          }
+
+          let lastVideoTapAt = 0;
+
+          const isPointInsideVideo = (x, y) => {
+            if (!x && !y) return false;
+            try {
+              const els = document.querySelectorAll("video, .jwplayer, .video-js, .plyr, [class*='video-player' i]");
+              for (let i = 0; i < els.length; i++) {
+                const r = els[i].getBoundingClientRect();
+                if (r.width > 100 && r.height > 70 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+                  return true;
+                }
+              }
+            } catch {}
+            return false;
+          };
+
+          // 2. Defuse synthetic script-triggered <a target="_blank">.click() popups
+          const origAClick = HTMLAnchorElement.prototype.click;
+          if (typeof origAClick === "function") {
+            HTMLAnchorElement.prototype.click = function click() {
+              try {
+                const href = String(this.href || "");
+                if (!isAuth(location.hostname) && !isAuth(href)) {
+                  const recentVideo = Date.now() - lastVideoTapAt < 1800;
+                  const rect = this.getBoundingClientRect ? this.getBoundingClientRect() : { width: 0, height: 0 };
+                  const invisible = rect.width === 0 || rect.height === 0;
+                  if (!this.isConnected || invisible || recentVideo) {
+                    return undefined;
+                  }
+                }
+              } catch {}
+              return origAClick.apply(this, arguments);
+            };
+          }
+
+          // 3. Defuse hidden <form target="_blank">.submit() popup tricks
+          const origFormSubmit = HTMLFormElement.prototype.submit;
+          if (typeof origFormSubmit === "function") {
+            HTMLFormElement.prototype.submit = function submit() {
+              try {
+                const tgt = String(this.target || "").toLowerCase();
+                if (!isAuth(location.hostname) && !isAuth(this.action) && (tgt === "_blank" || tgt === "_new")) {
+                  return undefined;
+                }
+              } catch {}
+              return origFormSubmit.apply(this, arguments);
+            };
+          }
+
+          // 4. Strip transparent click-jacking overlays over <video> players (while preserving normal visible links!)
+          const shieldTap = (e) => {
+            try {
+              if (isAuth(location.hostname)) return;
+              const pt = (e.touches && e.touches[0]) ? e.touches[0] : e;
+              const cx = pt.clientX || 0;
+              const cy = pt.clientY || 0;
+              const overVideo = isPointInsideVideo(cx, cy);
+              const targetEl = e.target && e.target.closest ? e.target : null;
+              if (!targetEl) return;
+
+              const anchor = targetEl.closest("a");
+              if (overVideo && !anchor) {
+                lastVideoTapAt = Date.now();
+              }
+
+              // Kill invisible click-trap divs/ins over videos
+              if (overVideo && !anchor && (targetEl.tagName === "DIV" || targetEl.tagName === "SPAN" || targetEl.tagName === "INS")) {
+                const st = window.getComputedStyle(targetEl);
+                const r = targetEl.getBoundingClientRect();
+                const z = parseInt(st.zIndex || "0", 10);
+                if (
+                  (st.position === "fixed" || st.position === "absolute") &&
+                  z >= 100 &&
+                  (parseFloat(st.opacity || "1") < 0.2 || st.backgroundColor === "rgba(0, 0, 0, 0)") &&
+                  r.width > 120 && r.height > 80 &&
+                  !targetEl.querySelector("video, button, input, [role='slider']")
+                ) {
+                  targetEl.style.setProperty("pointer-events", "none", "important");
+                  targetEl.style.setProperty("display", "none", "important");
+                }
+              }
+
+              if (!anchor) return;
+              const href = String(anchor.getAttribute("href") || anchor.href || "");
+              if (isAuth(href)) return;
+
+              const st = window.getComputedStyle(anchor);
+              const op = parseFloat(st.opacity || "1");
+              const noVisibleContent = !(anchor.textContent || "").trim() && !anchor.querySelector("img, svg, canvas, video, button, picture");
+              const rect = anchor.getBoundingClientRect();
+              const hugeOverlay = (st.position === "fixed" || st.position === "absolute") &&
+                rect.width > window.innerWidth * 0.4 && rect.height > window.innerHeight * 0.4;
+
+              // Only block invisible/empty overlay anchors over videos or full-screen traps
+              if ((noVisibleContent || op < 0.15 || st.visibility === "hidden") && (overVideo || hugeOverlay)) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                anchor.removeAttribute("target");
+                anchor.removeAttribute("href");
+                anchor.style.setProperty("pointer-events", "none", "important");
+              }
+            } catch {}
+          };
+
+          window.addEventListener("touchstart", shieldTap, true);
+          window.addEventListener("pointerdown", shieldTap, true);
+          window.addEventListener("mousedown", shieldTap, true);
+          window.addEventListener("click", shieldTap, true);
+        })();
+      `;
+      (document.documentElement || document.head || document).appendChild(script);
+      script.remove();
+    } catch {}
+  }
+
+  injectMainWorldPopupShield();
+
+  // =========================================================================
+  // 2. TELEMETRY & TOAST HELPERS
+  // =========================================================================
   const reportedMap = new Map();
   function sendTelemetry(kind, detail) {
     const key = `${kind}::${detail}`;
@@ -36,6 +198,7 @@
   }
 
   function showToast(msg) {
+    if (!IS_TOP_FRAME) return;
     try {
       let toast = document.getElementById("musec-shield-toast");
       if (!toast) {
@@ -44,7 +207,7 @@
         toast.style.cssText =
           "position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:2147483647;" +
           "background:rgba(20,22,34,0.95);color:#e2f8ff;border:1px solid rgba(56,189,248,0.65);" +
-          "border-radius:999px;padding:9px 18px;font:600 13px/1.3 system-ui,sans-serif;" +
+          "border-radius:999px;padding:10px 18px;font:600 14px/1.3 system-ui,sans-serif;" +
           "box-shadow:0 8px 28px rgba(0,0,0,0.45);pointer-events:none;transition:opacity .25s ease;";
         (document.body || document.documentElement).appendChild(toast);
       }
@@ -57,21 +220,41 @@
     } catch {}
   }
 
+  // =========================================================================
+  // 3. COSMETIC AD-BLOCKING (650 Brave Shields Selectors) & YOUTUBE SHIELD CSS
+  // =========================================================================
+  const BASE_AD_SELECTORS = [
+    "ins.adsbygoogle", ".adsbygoogle", ".ad-unit", ".ad-placement", ".ad-leaderboard",
+    ".ad-Banner", ".ad_unit", ".ad_wrapper", ".taboola-widget", ".outbrain-widget",
+    '[id^="google_ads_"]', '[id^="div-gpt-ad"]', '[id^="ad_position_"]',
+    '[id^="taboola-"]', '[id^="outbrain_"]', "[data-ad-client]", "[data-ad-slot]",
+    "[data-google-query-id]", 'iframe[src*="doubleclick.net"]', 'iframe[src*="googlesyndication.com"]',
+    'iframe[src*="adnxs.com"]', 'iframe[src*="popads"]', 'iframe[src*="exoclick"]',
+    'iframe[src*="adsterra"]', 'iframe[src*="propellerads"]', 'iframe[src*="magsrv"]',
+    'iframe[src*="realsrv"]', 'iframe[id^="google_ads"]',
+    ".mgbox", "[id^='MarketGid']", "[class*='ad-container' i]", "[class*='ad-banner' i]",
+    "[id*='popup-ad' i]", "[class*='popup-ad' i]", "[class*='sticky-ad' i]", "[class*='floating-ad' i]"
+  ];
+
   function buildDynamicCss() {
     const yt = config.youtubeShield || {};
     const rules = [];
 
     if (config.adShieldEnabled) {
-      rules.push(
-        "ins.adsbygoogle, .adsbygoogle, .taboola-widget, .outbrain-widget, " +
-        '[id^="google_ads_"], [id^="div-gpt-ad"], [data-ad-client], [data-ad-slot] { display: none !important; }'
-      );
+      const allSel = BASE_AD_SELECTORS.concat(cosmeticSelectors || []);
+      // Chunk into 80 selectors per rule so CSS parser stays blazing fast
+      for (let i = 0; i < allSel.length; i += 80) {
+        const slice = allSel.slice(i, i + 80);
+        if (slice.length > 0) {
+          rules.push(`${slice.join(", ")} { display: none !important; visibility: hidden !important; pointer-events: none !important; }`);
+        }
+      }
     }
 
     if (yt.enabled && IS_YT && yt.blockShorts) {
       rules.push(
         'ytd-reel-shelf-renderer, ytm-reel-shelf-renderer, ytd-rich-shelf-renderer[is-shorts], ' +
-        'ytd-shorts, ytd-reel-video-renderer, a[title="Shorts"], ' +
+        'ytd-shorts, ytd-reel-video-renderer, a[title="Shorts"], ytm-shorts-lockup-view-model, ytm-shorts-lockup-view-model-v2, ' +
         'ytd-guide-entry-renderer:has(a[title="Shorts"]), ytd-mini-guide-entry-renderer:has(a[title="Shorts"]), ' +
         'yt-tab-shape[tab-title="Shorts"], ytd-rich-item-renderer:has(a[href^="/shorts/"]), ' +
         'ytd-video-renderer:has(a[href^="/shorts/"]), ytd-compact-video-renderer:has(a[href^="/shorts/"]), ' +
@@ -82,6 +265,7 @@
     if (yt.enabled && IS_YT && yt.blockAds) {
       rules.push(
         'ytd-ad-slot-renderer, ytd-in-feed-ad-layout-renderer, ytd-promoted-sparkles-web-renderer, ' +
+        'ytm-promoted-sparkles-web-renderer, ytm-promoted-video-renderer, ytm-companion-ad-renderer, ' +
         'ytd-display-ad-renderer, ytd-banner-promo-renderer, ytd-action-companion-ad-renderer, ' +
         'ytd-merch-shelf-renderer, #masthead-ad, #player-ads, .ytp-ad-overlay-container, ' +
         '.ytp-ad-message-container, ytd-enforcement-message-view-model { display: none !important; }'
@@ -115,7 +299,10 @@
       styleEl.id = "musec-shield-style";
       (document.head || document.documentElement).appendChild(styleEl);
     }
-    styleEl.textContent = buildDynamicCss();
+    const nextCss = buildDynamicCss();
+    if (styleEl.textContent !== nextCss) {
+      styleEl.textContent = nextCss;
+    }
   }
 
   function matchesKeyword(haystack, keywords) {
@@ -230,7 +417,6 @@
 
     if (!IS_YT) return;
 
-    // 1. Block Shorts SPA routes
     if (yt.blockShorts && (pathname === "/shorts" || pathname.startsWith("/shorts/"))) {
       sendTelemetry("short", `Blocked Short ${pathname.slice(0, 32)}`);
       showToast("🛡️ YouTube Short blocked by MuSec Shield");
@@ -240,12 +426,9 @@
 
     if (location.search.includes("mmu_shield=short_blocked")) {
       showToast("🛡️ YouTube Short blocked by MuSec Shield");
-      try {
-        history.replaceState(null, "", "https://www.youtube.com/");
-      } catch {}
+      try { history.replaceState(null, "", "https://www.youtube.com/"); } catch {}
     }
 
-    // 2. Skip YouTube Ads & dismiss anti-adblock dialogs
     if (yt.blockAds) {
       const player = document.getElementById("movie_player") || document.querySelector(".html5-video-player");
       const isAdShowing = Boolean(
@@ -283,13 +466,11 @@
       });
     }
 
-    // 3. Autoplay off
     if (yt.blockAutoplay) {
       const autoBtn = document.querySelector('.ytp-autonav-toggle-button[aria-checked="true"], button[aria-label*="Autoplay is on" i]');
       if (autoBtn && typeof autoBtn.click === "function") autoBtn.click();
     }
 
-    // 4. Filter video cards across desktop & mobile YouTube DOM
     const hasTextFilters =
       (yt.blockedKeywords && yt.blockedKeywords.length > 0) ||
       (yt.blockedChannels && yt.blockedChannels.length > 0) ||
@@ -322,7 +503,6 @@
       }
     }
 
-    // 5. Watch page guard
     if (pathname === "/watch" && hasTextFilters) {
       const titleEl = document.querySelector("h1.ytd-watch-metadata, .slim-video-information-title, h1");
       const chanEl = document.querySelector("ytd-watch-metadata ytd-channel-name a, .slim-owner-channel-name, #owner #channel-name a");
@@ -344,7 +524,7 @@
 
   // Dark Pattern Automator (Auto-decline non-essential cookies)
   function runDarkPatternAutomator() {
-    if (!config.darkPatternAuto) return { dismissed: 0 };
+    if (!config.darkPatternAuto || !IS_TOP_FRAME) return { dismissed: 0 };
     let dismissed = 0;
     const rejectRe = /^(reject all|decline all|decline|reject non-essential|only necessary|necessary only|avvisa alla|endast nödvändiga)$/i;
     const buttons = document.querySelectorAll("button, [role='button'], a");
@@ -365,10 +545,107 @@
     return { dismissed };
   }
 
-  // On-demand Page Intelligence Extractor (Reader/Paywall, Price/Reviews, Translation)
-  function extractPageIntelligence(command) {
+  // =========================================================================
+  // 4. IN-PLACE WHOLE-PAGE TRANSLATION ENGINE (TreeWalker across entire DOM)
+  // =========================================================================
+  let storedTransNodes = [];
+  let storedOriginalTitle = null;
+
+  function collectPageTextNodes() {
+    if (!IS_TOP_FRAME || !document.body) return { items: [], title: "" };
+    if (storedTransNodes.length > 0) {
+      // Restore originals before re-collecting so we never double-translate
+      restorePageTranslation();
+    }
+    const skipTags = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "CODE", "PRE", "SVG", "TEXTAREA", "INPUT", "SELECT", "OPTION", "MATH"]);
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent) return NodeFilter.FILTER_REJECT;
+        if (skipTags.has(parent.tagName) || parent.closest("script, style, noscript, code, pre, svg, textarea, [contenteditable='true']")) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        const raw = (node.nodeValue || "").replace(/\s+/g, " ").trim();
+        if (raw.length < 2 || /^[\d\s.,:%$€£+\-–—/|•·()[\]{}!?@#&*_=]+$/.test(raw)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    storedTransNodes = [];
+    storedOriginalTitle = document.title || "";
+    const items = [];
+    let current;
+    while ((current = walker.nextNode()) && items.length < 420) {
+      const text = (current.nodeValue || "").replace(/\s+/g, " ").trim();
+      const idx = storedTransNodes.length;
+      storedTransNodes.push({ node: current, original: current.nodeValue });
+      items.push({ i: idx, t: text.slice(0, 600) });
+    }
+    return { title: storedOriginalTitle, items };
+  }
+
+  function applyPageTranslations(args) {
+    if (!IS_TOP_FRAME) return { applied: 0 };
+    const list = (args && Array.isArray(args.translations)) ? args.translations : [];
+    let applied = 0;
+    for (let k = 0; k < list.length; k++) {
+      const entry = list[k];
+      if (!entry || typeof entry.i !== "number" || typeof entry.t !== "string") continue;
+      const target = storedTransNodes[entry.i];
+      if (target && target.node && target.node.isConnected) {
+        const orig = target.original || "";
+        const leadSpace = orig.startsWith(" ") ? " " : "";
+        const trailSpace = orig.endsWith(" ") ? " " : "";
+        target.node.nodeValue = `${leadSpace}${entry.t}${trailSpace}`;
+        applied += 1;
+      }
+    }
+    if (args && typeof args.translatedTitle === "string" && args.translatedTitle.trim()) {
+      document.title = args.translatedTitle.trim();
+    }
+    if (applied > 0) {
+      showToast(`🌐 Translated ${applied} page blocks to English`);
+    }
+    return { applied };
+  }
+
+  function restorePageTranslation() {
+    if (!IS_TOP_FRAME) return { restored: 0 };
+    let restored = 0;
+    for (let i = 0; i < storedTransNodes.length; i++) {
+      const entry = storedTransNodes[i];
+      if (entry && entry.node && entry.node.isConnected) {
+        entry.node.nodeValue = entry.original;
+        restored += 1;
+      }
+    }
+    if (storedOriginalTitle !== null) {
+      document.title = storedOriginalTitle;
+    }
+    storedTransNodes = [];
+    if (restored > 0) {
+      showToast("↩ Restored original page language");
+    }
+    return { restored };
+  }
+
+  // On-demand Page Intelligence Extractor (Reader/Paywall, Price/Reviews, Whole-Page Translation)
+  function extractPageIntelligence(command, args) {
+    if (!IS_TOP_FRAME) return null;
+
+    if (command === "get_page_text_nodes") {
+      return collectPageTextNodes();
+    }
+    if (command === "apply_page_translations") {
+      return applyPageTranslations(args);
+    }
+    if (command === "restore_page_translation") {
+      return restorePageTranslation();
+    }
+
     if (command === "extract_reader") {
-      // Remove soft paywall overlays and blur in-place
       for (const root of [document.documentElement, document.body]) {
         if (!root) continue;
         root.style.setProperty("overflow", "auto", "important");
@@ -444,24 +721,26 @@
     if (!msg || typeof msg !== "object") return undefined;
     if (msg.type === "config_update" && msg.config) {
       config = msg.config;
+      if (Array.isArray(msg.cosmeticSelectors)) cosmeticSelectors = msg.cosmeticSelectors;
       runYouTubeAndReelsShield();
       return Promise.resolve({ ok: true });
     }
     if (msg.type === "page_command") {
-      return Promise.resolve(extractPageIntelligence(msg.command));
+      if (!IS_TOP_FRAME) return undefined;
+      return Promise.resolve(extractPageIntelligence(msg.command, msg.args || {}));
     }
     return undefined;
   });
 
-  // Fetch initial config from background immediately
+  // Fetch initial config + 650 Brave cosmetic selectors immediately
   browser.runtime.sendMessage({ type: "get_config" }).then((res) => {
     if (res && res.config) config = res.config;
+    if (res && Array.isArray(res.cosmeticSelectors)) cosmeticSelectors = res.cosmeticSelectors;
     runYouTubeAndReelsShield();
   }).catch(() => {
     runYouTubeAndReelsShield();
   });
 
-  // Keep YouTube Kids Shield active across SPA navigations & dynamic feeds
   let scanScheduled = false;
   const scheduleScan = () => {
     if (scanScheduled) return;

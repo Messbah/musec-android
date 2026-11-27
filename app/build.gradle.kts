@@ -12,8 +12,8 @@ android {
         applicationId = "com.musec.browser"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     // Build two separate lean APKs (~65-80 MB each instead of one ~500 MB universal APK):

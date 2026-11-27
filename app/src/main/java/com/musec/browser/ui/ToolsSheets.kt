@@ -383,16 +383,23 @@ fun TranslatorSheet(manager: GeckoBrowserManager, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     var inputText by remember { mutableStateOf("") }
     var translated by remember { mutableStateOf("") }
-    var loading by remember { mutableStateOf(false) }
+    var loadingText by remember { mutableStateOf(false) }
+    var translatingPage by remember { mutableStateOf(false) }
+    var pageStatus by remember { mutableStateOf("Tap below to translate the entire active webpage in-place.") }
 
-    LaunchedEffect(Unit) {
-        val data = manager.runPageCommand("extract_translate")
-        val extracted = data?.optString("text").orEmpty()
-        if (extracted.isNotBlank()) {
-            inputText = extracted
-            loading = true
-            translated = MuSecToolkit.translateToEnglish(extracted)
-            loading = false
+    fun triggerWholePageTranslation() {
+        scope.launch {
+            translatingPage = true
+            pageStatus = "Scanning entire webpage text..."
+            val count = manager.translateWholeActivePage { done, total ->
+                pageStatus = "Translating webpage in-place: $done / $total blocks..."
+            }
+            translatingPage = false
+            pageStatus = if (count > 0) {
+                "✓ Translated $count blocks across the whole page! Tap Close to read."
+            } else {
+                "Open any foreign-language webpage first, then tap Translate Whole Page."
+            }
         }
     }
 
@@ -401,23 +408,55 @@ fun TranslatorSheet(manager: GeckoBrowserManager, onClose: () -> Unit) {
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("🌐 Universal Translator (Any → EN)", color = MuSecColors.TextPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
-            OutlinedButton(onClick = onClose) { Text("Close") }
+            Text("🌐 Whole-Page Translator (Any → EN)", color = MuSecColors.TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            OutlinedButton(onClick = onClose, modifier = Modifier.tvFocusBorder(RoundedCornerShape(99.dp))) { Text("Close") }
         }
+
+        // In-Place Full Webpage Translation Card
+        Surface(color = MuSecColors.SurfaceCard, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Live Webpage Translation", color = MuSecColors.NeonCyan, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text(pageStatus, color = MuSecColors.TextSecondary, fontSize = 14.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { triggerWholePageTranslation() },
+                        enabled = !translatingPage,
+                        modifier = Modifier.weight(1f).tvFocusBorder(RoundedCornerShape(99.dp))
+                    ) {
+                        Text(if (translatingPage) "Translating..." else "🌐 Translate Whole Page", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                val restored = manager.restoreActivePageTranslation()
+                                pageStatus = if (restored > 0) "↩ Restored $restored original blocks." else "Already in original language."
+                            }
+                        },
+                        enabled = !translatingPage,
+                        modifier = Modifier.tvFocusBorder(RoundedCornerShape(99.dp))
+                    ) {
+                        Text("↩ Original", fontSize = 13.sp)
+                    }
+                }
+            }
+        }
+
+        // Manual Text Snippet Translator
+        Text("Or Translate Custom Text", color = MuSecColors.TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
         OutlinedTextField(value = inputText, onValueChange = { inputText = it }, placeholder = { Text("Paste any language text...") }, maxLines = 4, modifier = Modifier.fillMaxWidth())
         Button(onClick = {
             scope.launch {
-                loading = true
+                loadingText = true
                 translated = MuSecToolkit.translateToEnglish(inputText)
-                loading = false
+                loadingText = false
             }
-        }) { Text(if (loading) "Translating..." else "Translate to English") }
+        }) { Text(if (loadingText) "Translating..." else "Translate Text to English") }
         if (translated.isNotBlank()) {
             Surface(color = MuSecColors.SurfaceCard, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                Text(translated, color = MuSecColors.TextPrimary, fontSize = 14.sp, lineHeight = 21.sp, modifier = Modifier.padding(12.dp))
+                Text(translated, color = MuSecColors.TextPrimary, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.padding(12.dp))
             }
         }
     }

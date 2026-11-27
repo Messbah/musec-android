@@ -66,9 +66,79 @@ class GeckoBrowserManager(
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val runtime: GeckoRuntime = getOrCreateRuntime(context.applicationContext)
+    private val popupBlockedDomains: Set<String> = loadBravePopupDomains(context.applicationContext)
 
     private var extensionPort: WebExtension.Port? = null
     private val pendingCommands = ConcurrentHashMap<String, CompletableDeferred<JSONObject>>()
+
+    private fun loadBravePopupDomains(appContext: Context): Set<String> {
+        val out = HashSet<String>(3000)
+        out.addAll(
+            listOf(
+                "popads.net", "popcash.net", "propellerads.com", "clickadu.com", "hilltopads.net",
+                "adsterra.com", "monetag.com", "exoclick.com", "exosrv.com", "realsrv.com",
+                "magsrv.com", "juicyads.com", "trafficjunky.net", "tsyndicate.com", "onclkds.com",
+                "acscdn.com", "profitablegate.com", "effectivegatecpm.com", "highperformanceformat.com",
+                "topcreativeformat.com", "doubleclick.net", "googlesyndication.com", "googleadservices.com"
+            )
+        )
+        runCatching {
+            appContext.assets.open("musec_extension/brave-shields-compiled.json").bufferedReader().use { reader ->
+                val json = JSONObject(reader.readText())
+                val popArr = json.optJSONArray("popupBlockedDomains")
+                if (popArr != null) {
+                    for (i in 0 until popArr.length()) {
+                        val d = popArr.optString(i).lowercase().trim()
+                        if (d.isNotEmpty()) out.add(d)
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    private fun getRootDomain(urlStr: String?): String {
+        if (urlStr.isNullOrBlank()) return ""
+        val host = runCatching { java.net.URI(urlStr).host?.lowercase()?.removeSuffix(".") }.getOrNull() ?: return ""
+        val parts = host.split(".")
+        if (parts.size <= 2) return host
+        val lastTwo = parts.takeLast(2).joinToString(".")
+        return if (Regex("^(co|com|org|net|gov|edu|ac)\\.[a-z]{2}$").matches(lastTwo) && parts.size >= 3) {
+            parts.takeLast(3).joinToString(".")
+        } else {
+            lastTwo
+        }
+    }
+
+    private fun isAuthOrBankUrl(urlStr: String?): Boolean {
+        if (urlStr.isNullOrBlank()) return false
+        return Regex(
+            "(?:accounts\\.google\\.com|login\\.microsoftonline\\.com|appleid\\.apple\\.com|bankid|frejaeid|swedbank|seb\\.se|nordea|handelsbanken|klarna|paypal|stripe|/oauth2?/|/authorize\\b)",
+            RegexOption.IGNORE_CASE
+        ).containsMatchIn(urlStr)
+    }
+
+    private fun isMaliciousPopupUrl(urlStr: String?): Boolean {
+        if (urlStr.isNullOrBlank() || urlStr == "about:blank") return true
+        val uri = runCatching { java.net.URI(urlStr) }.getOrNull() ?: return true
+        val host = uri.host?.lowercase()?.removeSuffix(".") ?: return true
+        var cursor = host
+        while (cursor.isNotEmpty()) {
+            if (popupBlockedDomains.contains(cursor)) return true
+            val dot = cursor.indexOf('.')
+            if (dot == -1) break
+            cursor = cursor.substring(dot + 1)
+        }
+        val path = uri.rawPath?.lowercase().orEmpty()
+        val query = uri.rawQuery?.lowercase().orEmpty()
+        if (Regex("(?:popunder|pop_under|/adclick|/adserver|/pagead/|clicktrack|malvert)", RegexOption.IGNORE_CASE).containsMatchIn(path)) {
+            return true
+        }
+        if (Regex("(?:popunder|clickid=|aff_id=|offer_id=|zoneid=|adid=|bannerid=)", RegexOption.IGNORE_CASE).containsMatchIn(query)) {
+            return true
+        }
+        return false
+    }
 
     private val _tabs = MutableStateFlow<List<BrowserTab>>(emptyList())
     val tabs: StateFlow<List<BrowserTab>> = _tabs.asStateFlow()
@@ -153,7 +223,7 @@ class GeckoBrowserManager(
         }
     }
 
-    suspend fun runPageCommand(command: String): JSONObject? {
+    suspend fun runPageCommand(command: String, args: JSONObject? = null): JSONObject? {
         val port = extensionPort ?: return null
         val reqId = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<JSONObject>()
@@ -162,6 +232,7 @@ class GeckoBrowserManager(
             put("type", "page_command")
             put("command", command)
             put("requestId", reqId)
+            if (args != null) put("args", args)
         }
         mainHandler.post {
             try {
@@ -170,7 +241,44 @@ class GeckoBrowserManager(
                 pendingCommands.remove(reqId)?.complete(JSONObject())
             }
         }
-        return withTimeoutOrNull(4500L) { deferred.await() }
+        return withTimeoutOrNull(8000L) { deferred.await() }
+    }
+
+    suspend fun translateWholeActivePage(onProgress: (Int, Int) -> Unit = { _, _ -> }): Int {
+        val extracted = runPageCommand("get_page_text_nodes") ?: return 0
+        val arr = extracted.optJSONArray("items") ?: return 0
+        val pageTitle = extracted.optString("title", "")
+        val items = mutableListOf<Pair<Int, String>>()
+        for (k in 0 until arr.length()) {
+            val obj = arr.optJSONObject(k) ?: continue
+            val idx = obj.optInt("i", -1)
+            val txt = obj.optString("t", "")
+            if (idx >= 0 && txt.isNotBlank()) items.add(idx to txt)
+        }
+        if (items.isEmpty()) return 0
+
+        val translatedTitle = if (pageTitle.isNotBlank()) MuSecToolkit.translateToEnglish(pageTitle) else ""
+        val translatedPairs = MuSecToolkit.translateBatchToEnglish(items, onProgress)
+        val payloadArr = org.json.JSONArray()
+        for ((idx, translatedText) in translatedPairs) {
+            payloadArr.put(JSONObject().apply {
+                put("i", idx)
+                put("t", translatedText)
+            })
+        }
+        val res = runPageCommand(
+            "apply_page_translations",
+            JSONObject().apply {
+                put("translations", payloadArr)
+                put("translatedTitle", translatedTitle)
+            }
+        )
+        return res?.optInt("applied", translatedPairs.size) ?: translatedPairs.size
+    }
+
+    suspend fun restoreActivePageTranslation(): Int {
+        val res = runPageCommand("restore_page_translation")
+        return res?.optInt("restored", 0) ?: 0
     }
 
     // --- Shield Config Mutations ---
@@ -252,13 +360,35 @@ class GeckoBrowserManager(
                 session: GeckoSession,
                 request: GeckoSession.NavigationDelegate.LoadRequest
             ): GeckoResult<AllowOrDeny> {
-                // Cleanly open target="_blank" / new-window requests as a new MuSec tab
-                // without colliding with GeckoView's onNewSession lifecycle
-                if (request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW &&
-                    request.uri.startsWith("http", ignoreCase = true)
-                ) {
-                    mainHandler.post {
-                        createTab(url = request.uri, isPrivate = isPrivate, openImmediately = true)
+                val adShieldOn = _shieldConfig.value.adShieldEnabled
+                val targetUri = request.uri
+                val isAuth = isAuthOrBankUrl(targetUri)
+
+                // 1. Block known Brave Shields popup/popunder/ad-redirect URLs immediately
+                if (adShieldOn && !isAuth && isMaliciousPopupUrl(targetUri)) {
+                    _shieldStats.update { it.copy(adsBlocked = it.adsBlocked + 1) }
+                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                }
+
+                // 2. Guard new-window / target="_blank" requests against video-player popups
+                if (request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW) {
+                    if (adShieldOn && !isAuth) {
+                        val currentTabUrl = _tabs.value.find { it.id == tabId }?.url
+                        val tabRoot = getRootDomain(currentTabUrl)
+                        val triggerRoot = getRootDomain(request.triggerUri)
+                        val isEmbeddedIframePopup = triggerRoot.isNotEmpty() && tabRoot.isNotEmpty() && triggerRoot != tabRoot
+
+                        // Block popups spawned without user gesture, redirect traps, or embedded video-player iframes
+                        if (!request.hasUserGesture || request.isRedirect || isEmbeddedIframePopup || isMaliciousPopupUrl(targetUri)) {
+                            _shieldStats.update { it.copy(adsBlocked = it.adsBlocked + 1) }
+                            return GeckoResult.fromValue(AllowOrDeny.DENY)
+                        }
+                    }
+                    if (targetUri.startsWith("http", ignoreCase = true)) {
+                        mainHandler.post {
+                            createTab(url = targetUri, isPrivate = isPrivate, openImmediately = true)
+                        }
+                        return GeckoResult.fromValue(AllowOrDeny.DENY)
                     }
                     return GeckoResult.fromValue(AllowOrDeny.DENY)
                 }
@@ -289,9 +419,13 @@ class GeckoBrowserManager(
                 updateTab(tabId) { it.copy(canGoForward = canGoForward) }
             }
 
-            override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession> {
-                // GeckoView requires an UNOPENED GeckoSession from onNewSession
-                // (calling open() here throws IllegalStateException: Session is already open!)
+            override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession>? {
+                val adShieldOn = _shieldConfig.value.adShieldEnabled
+                // Block scripted popup windows / about:blank popunders / ad domains when playing videos
+                if (adShieldOn && !isAuthOrBankUrl(uri)) {
+                    _shieldStats.update { it.copy(adsBlocked = it.adsBlocked + 1) }
+                    return null
+                }
                 val newTab = createTab(url = uri.ifBlank { NEWTAB_URL }, isPrivate = isPrivate, openImmediately = false)
                 return GeckoResult.fromValue(newTab.session)
             }

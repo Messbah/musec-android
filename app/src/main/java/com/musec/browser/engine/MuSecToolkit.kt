@@ -291,29 +291,101 @@ object MuSecToolkit {
     }
 
     // -------------------------------------------------------------------------
-    // 6. Universal Any-Language -> English Translator
+    // 6. Universal Any-Language -> English Translator (POST + Chunked Batching)
     // -------------------------------------------------------------------------
+    private fun translateChunkPost(chunk: String): String {
+        val clean = chunk.trim()
+        if (clean.isBlank()) return ""
+        val encodedBody = "q=" + URLEncoder.encode(clean, "UTF-8")
+        val (code, body) = httpRequest(
+            urlStr = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t",
+            method = "POST",
+            headers = mapOf("Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"),
+            body = encodedBody,
+            timeoutMs = 8000
+        )
+        if (code in 200..299 && body.startsWith("[")) {
+            val root = JSONArray(body)
+            val sentences = root.getJSONArray(0)
+            return buildString {
+                for (i in 0 until sentences.length()) {
+                    append(sentences.getJSONArray(i).optString(0))
+                }
+            }.trim()
+        }
+        return clean
+    }
+
     suspend fun translateToEnglish(text: String): String = withContext(Dispatchers.IO) {
-        val clean = text.trim().take(2800)
+        val clean = text.trim().take(12000)
         if (clean.isBlank()) return@withContext ""
-        runCatching {
-            val encoded = URLEncoder.encode(clean, "UTF-8")
-            val (code, body) = httpRequest(
-                "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=$encoded",
-                timeoutMs = 7000
-            )
-            if (code in 200..299 && body.startsWith("[")) {
-                val root = JSONArray(body)
-                val sentences = root.getJSONArray(0)
-                buildString {
-                    for (i in 0 until sentences.length()) {
-                        append(sentences.getJSONArray(i).optString(0))
-                    }
-                }.trim()
-            } else {
-                "Translation server temporarily unavailable."
+        val paragraphs = clean.split("\n\n").filter { it.isNotBlank() }
+        if (paragraphs.size <= 1 && clean.length <= 1800) {
+            return@withContext runCatching { translateChunkPost(clean) }
+                .getOrElse { "Translation failed: ${it.message}" }
+        }
+        val out = mutableListOf<String>()
+        val buf = StringBuilder()
+        for (p in paragraphs) {
+            if (buf.length + p.length > 1600 && buf.isNotEmpty()) {
+                out.add(runCatching { translateChunkPost(buf.toString()) }.getOrDefault(buf.toString()))
+                buf.clear()
             }
-        }.getOrElse { "Translation failed: ${it.message}" }
+            if (buf.isNotEmpty()) buf.append("\n\n")
+            buf.append(p)
+        }
+        if (buf.isNotEmpty()) {
+            out.add(runCatching { translateChunkPost(buf.toString()) }.getOrDefault(buf.toString()))
+        }
+        out.joinToString("\n\n")
+    }
+
+    suspend fun translateBatchToEnglish(
+        items: List<Pair<Int, String>>,
+        onProgress: (Int, Int) -> Unit = { _, _ -> }
+    ): List<Pair<Int, String>> = withContext(Dispatchers.IO) {
+        if (items.isEmpty()) return@withContext emptyList()
+        val marker = "\n[[[M_SEP]]]\n"
+        val batches = mutableListOf<List<Pair<Int, String>>>()
+        var current = mutableListOf<Pair<Int, String>>()
+        var charLen = 0
+
+        for (item in items) {
+            val len = item.second.length + marker.length
+            if (current.isNotEmpty() && (charLen + len > 1100 || current.size >= 16)) {
+                batches.add(current)
+                current = mutableListOf()
+                charLen = 0
+            }
+            current.add(item)
+            charLen += len
+        }
+        if (current.isNotEmpty()) batches.add(current)
+
+        val results = mutableListOf<Pair<Int, String>>()
+        var doneCount = 0
+        val sepSplitRe = Regex("""\s*\[\[\[\s*M_SEP\s*\]\]\]\s*""", RegexOption.IGNORE_CASE)
+
+        for (batch in batches) {
+            val joined = batch.joinToString(marker) { it.second }
+            val translatedJoined = runCatching { translateChunkPost(joined) }.getOrDefault("")
+            val parts = if (translatedJoined.isNotBlank()) sepSplitRe.split(translatedJoined) else emptyList()
+
+            if (parts.size == batch.size) {
+                for (k in batch.indices) {
+                    results.add(batch[k].first to parts[k].trim())
+                }
+            } else {
+                // Safe per-item fallback if a batch delimiter shifted
+                for (item in batch) {
+                    val single = runCatching { translateChunkPost(item.second) }.getOrDefault(item.second)
+                    results.add(item.first to single)
+                }
+            }
+            doneCount += batch.size
+            withContext(Dispatchers.Main) { onProgress(doneCount, items.size) }
+        }
+        results
     }
 
     // -------------------------------------------------------------------------
